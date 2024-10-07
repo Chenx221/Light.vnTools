@@ -8,6 +8,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="Mime-Detective" Version="24.7.1" />
+    <PackageReference Include="Mime-Detective.Definitions.Exhaustive" Version="24.7.1" />
     <PackageReference Include="SharpZipLib" Version="1.4.2" />
   </ItemGroup>
 

@@ -1,5 +1,6 @@
 ﻿using System.Text;
 using ICSharpCode.SharpZipLib.Zip;
+using MimeDetective;
 
 namespace LightvnTools
 {
@@ -18,7 +19,7 @@ namespace LightvnTools
 
         static void Main(string[] args)
         {
-            if (args.Length < 1)
+            if (args.Length < 2)
             {
                 Console.WriteLine($"Light.vnTools v{VERSION}");
                 Console.WriteLine();
@@ -27,43 +28,70 @@ namespace LightvnTools
                 );
                 Console.WriteLine();
                 Console.WriteLine("Usage:");
-                Console.WriteLine("  Unpack: Drag and drop '.vndat' / '.mcdat' file(s) to 'LightvnTools.exe'");
-                Console.WriteLine("  Repack: Drag and drop unpacked folder to 'LightvnTools.exe'");
+                Console.WriteLine("  Unpack: -u (-r) <folder>");
+                Console.WriteLine("  Repack: -p <folder>");
                 Console.ReadKey();
                 return;
             }
-
+            string operation = args[0];
             string zipPassword = Encoding.UTF8.GetString(KEY);
+            bool recoverFileType = (args[1] == "-r") ? true : false;
 
-            for (int i = 0; i < args.Length; i++)
+            if (operation == "-u") // Unpack
             {
-                if (File.Exists(args[i]))
+                int a = recoverFileType ? 2 : 1;
+                if (Directory.Exists(args[a]))
                 {
-                    if (IsVndat(args[i]))
+                    var outputDirectory = Path.Combine(Path.GetDirectoryName(args[a]), "output");
+
+                    if (!Directory.Exists(outputDirectory))
                     {
-                        UnpackVndat(args[i], Path.GetFileNameWithoutExtension(args[i]), zipPassword);
+                        Directory.CreateDirectory(outputDirectory);
                     }
-                    else if (Path.GetExtension(args[i]).Contains("mcdat"))
+
+                    var Inspector = new ContentInspectorBuilder()
                     {
-                        Console.WriteLine($"Decrypting {args[i]}...");
-                        XOR(args[i], $"{args[i]}.dec");
-                    }
-                    else if (Path.GetExtension(args[i]).Contains("dec"))
+                        Definitions = new MimeDetective.Definitions.ExhaustiveBuilder()
+                        {
+                            UsageType = MimeDetective.Definitions.Licensing.UsageType.PersonalNonCommercial
+                        }.Build()
+                    }.Build();
+
+                    var files = Directory.GetFiles(args[a]);
+
+                    foreach (var file in files)
                     {
-                        Console.WriteLine($"Encrypting {args[i]}...");
-                        XOR(args[i], args[i].Replace("dec", "enc"));
-                    }
-                    else
-                    {
-                        Console.WriteLine($"Unsupported file! {args[i]}");
-                        break;
+                        if (IsVndat(file))
+                        {
+                            UnpackVndat(file, Path.GetFileNameWithoutExtension(file), zipPassword);
+                        }
+                        else if (Path.GetExtension(file).Contains("mcdat"))
+                        {
+                            Console.WriteLine($"Decrypting {file}...");
+                            if (recoverFileType)
+                            {
+                                string recoveredFileName = Path.Combine(outputDirectory, Path.GetFileNameWithoutExtension(file) + ".");
+                                XOR(file, Inspector, recoveredFileName);
+                            }
+                            else
+                            {
+                                string decryptedFileName = Path.Combine(outputDirectory, Path.GetFileName(file) + ".dec");
+                                XOR(file, decryptedFileName);
+                            }
+                        }
                     }
                 }
-
-                if (Directory.Exists(args[i]))
+                else
                 {
-                    RepackVndat(args[i], zipPassword);
-                    GetFilesRecursive(args[i]).ToList().ForEach(path =>
+                    Console.WriteLine($"Directory not found: {args[a]}");
+                }
+            }
+            else if (operation == "-p") // Pack
+            {
+                if (Directory.Exists(args[1]))
+                {
+                    RepackVndat(args[1], zipPassword);
+                    GetFilesRecursive(args[1]).ToList().ForEach(path =>
                     {
                         if (path.Contains("mcdat"))
                         {
@@ -77,6 +105,14 @@ namespace LightvnTools
                         }
                     });
                 }
+                else
+                {
+                    Console.WriteLine($"Directory not found: {args[1]}");
+                }
+            }
+            else
+            {
+                Console.WriteLine($"Invalid operation: {operation}. Use -u for unpack and -p for pack.");
             }
 
             Console.WriteLine("\nDone.");
@@ -329,6 +365,39 @@ namespace LightvnTools
                 inputStream.Read(buffer, 0, bufferLength);
 
                 buffer = XOR(buffer);
+
+                using FileStream outputStream = File.OpenWrite(outputFilePath ?? filePath);
+                outputStream.Write(buffer, 0, bufferLength);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"An error occurred: {ex.Message}");
+            }
+        }
+
+        static void XOR(string filePath, ContentInspector Inspector, string? outputFilePath = null)
+        {
+            try
+            {
+                byte[] buffer;
+                int bufferLength;
+
+                using FileStream inputStream = File.OpenRead(filePath);
+                buffer = new byte[bufferLength = (int)inputStream.Length];
+                inputStream.Read(buffer, 0, bufferLength);
+
+                buffer = XOR(buffer);
+
+                var Results = Inspector.Inspect(buffer);
+                if (Results.Length == 0)
+                {
+                    outputFilePath += "dec";
+                }
+                else
+                {
+                    outputFilePath += Results[0].Definition.File.Extensions[0];
+                }
+                
 
                 using FileStream outputStream = File.OpenWrite(outputFilePath ?? filePath);
                 outputStream.Write(buffer, 0, bufferLength);
