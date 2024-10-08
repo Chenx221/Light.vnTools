@@ -1,4 +1,6 @@
-﻿using System.Text;
+﻿using System.IO;
+using System.Text;
+using System.Text.RegularExpressions;
 using ICSharpCode.SharpZipLib.Zip;
 using MimeDetective;
 
@@ -29,7 +31,7 @@ namespace LightvnTools
                 Console.WriteLine();
                 Console.WriteLine("Usage:");
                 Console.WriteLine("  Unpack: -u (-r) <folder>");
-                Console.WriteLine("  Repack: -p <folder>");
+                Console.WriteLine("  Repack: -p <folder> (-k)");
                 Console.ReadKey();
                 return;
             }
@@ -63,7 +65,7 @@ namespace LightvnTools
                     {
                         if (IsVndat(file))
                         {
-                            UnpackVndat(file, Path.GetFileNameWithoutExtension(file), zipPassword);
+                            UnpackVndat(file, Path.Combine(outputDirectory, Path.GetFileNameWithoutExtension(file)), zipPassword);
                         }
                         else if (Path.GetExtension(file).Contains("mcdat"))
                         {
@@ -90,20 +92,45 @@ namespace LightvnTools
             {
                 if (Directory.Exists(args[1]))
                 {
-                    RepackVndat(args[1], zipPassword);
-                    GetFilesRecursive(args[1]).ToList().ForEach(path =>
+                    var packDirectory = Path.Combine(Path.GetDirectoryName(args[1]), "pack");
+
+                    if (!Directory.Exists(packDirectory))
                     {
-                        if (path.Contains("mcdat"))
+                        Directory.CreateDirectory(packDirectory);
+                    }
+
+                    string[] files = Directory.GetFiles(args[1]);
+                    string[] directories = Directory.GetDirectories(args[1]);
+
+                    // mcdat
+                    foreach (string file in files)
+                    {
+                        string fileName = Path.GetFileName(file);
+
+                        if (Regex.IsMatch(fileName, @"^\d+\.mcdat\.dec$") ||
+    (Regex.IsMatch(fileName, @"^\d+\.\w+$") && !fileName.EndsWith(".mcdat", StringComparison.OrdinalIgnoreCase)))
                         {
-                            Console.WriteLine($"Decrypting {path}...");
-                            XOR(path, $"{path}.dec");
+                            Console.WriteLine($"Pack mcdat file: {file}");
+                            string numberPart = Regex.Match(fileName, @"^\d+").Value;
+                            string decryptedFileName = Path.Combine(packDirectory, numberPart + ".mcdat");
+                            XOR(file, decryptedFileName);
                         }
-                        else if (path.Contains("dec"))
+                    }
+
+                    // vndat
+                    foreach (string directory in directories)
+                    {
+                        Console.WriteLine($"Found directory: {directory}");
+                        string outputFile = Path.Combine(packDirectory, Path.GetFileName(directory) + ".vndat");
+                        if (args.Length < 3) //no pwd
                         {
-                            Console.WriteLine($"Encrypting {path}...");
-                            XOR(path, path.Replace("dec", "enc"));
+                            RepackVndat(directory, outputFile);
                         }
-                    });
+                        else if (args[2] == "-k") //pwd
+                        {
+                            RepackVndat(directory, outputFile, zipPassword);
+                        }
+                    }
                 }
                 else
                 {
@@ -154,35 +181,26 @@ namespace LightvnTools
                         try
                         {
                             Console.WriteLine($"Writing {entryPath}...");
-
                             using Stream inputStream = zipFile.GetInputStream(entry);
                             using FileStream outputStream = File.Create(entryPath);
-                            inputStream.CopyTo(outputStream);
+
+                            if (usePassword)
+                            {
+                                inputStream.CopyTo(outputStream);
+                            }
+                            else
+                            {
+                                using MemoryStream memoryStream = new();
+                                inputStream.CopyTo(memoryStream);
+                                byte[] buffer = XOR(memoryStream.ToArray());
+                                outputStream.Write(buffer, 0, buffer.Length);
+                            }
                         }
                         catch (Exception ex)
                         {
                             Console.WriteLine($"Failed to write {entryPath}! {ex.Message}");
                         }
                     }
-                }
-
-                Console.WriteLine("Done.");
-            }
-
-            // Only XOR the `.vndat` contents if the archive is not password protected.
-            if (!usePassword)
-            {
-                string[] files = GetFilesRecursive(outputFolder);
-
-                if (files.Length > 0)
-                {
-                    foreach (string file in files)
-                    {
-                        Console.WriteLine($"XORing {file}...");
-                        XOR(file);
-                    }
-
-                    Console.WriteLine("Done.");
                 }
             }
         }
@@ -192,24 +210,18 @@ namespace LightvnTools
         /// </summary>
         /// <param name="sourceFolder"></param>
         /// <param name="password"></param>
-        static void RepackVndat(string sourceFolder, string? password = "")
+        static void RepackVndat(string sourceFolder, string outputFile, string? password = "")
         {
-            string outputFile = $"{Path.GetFileName(sourceFolder)}.vndat";
             string[] files = GetFilesRecursive(sourceFolder);
             string? tempFolder = $"{sourceFolder}_temp";
-
-            // Only backup original file once
-            string backupFile = $"{outputFile}.bak";
-            if (!File.Exists(backupFile))
+            if (Directory.Exists(tempFolder))
             {
-                Console.WriteLine($"Backup the original file as {Path.GetFileName(backupFile)}...");
-                File.Copy(outputFile, backupFile);
+                Directory.Delete(tempFolder, true);
             }
-
-            bool usePassword = IsPasswordProtectedZip(backupFile);
+            bool usePassword = !string.IsNullOrEmpty(password);
 
             using ZipOutputStream zipStream = new(File.Create(outputFile));
-
+            zipStream.SetLevel(0);
             // Uses the backup file to check if it's encrypted to bypass
             // the file is being used by another process exception.
             if (usePassword)
@@ -221,13 +233,17 @@ namespace LightvnTools
             {
                 Console.WriteLine($"Creating a temporary copy of {Path.GetFileName(sourceFolder)} to perform XOR encryption...");
 
-                CopyFolder(sourceFolder, tempFolder);
-                files = GetFilesRecursive(tempFolder);
-
                 foreach (string file in files)
                 {
-                    Console.WriteLine($"Encrypting {Path.GetRelativePath(sourceFolder, file)}...");
-                    XOR(file);
+                    string tempFilePath = Path.Combine(tempFolder, Path.GetRelativePath(sourceFolder, file));
+                    string directory = Path.GetDirectoryName(tempFilePath);
+                    if (!Directory.Exists(directory))
+                    {
+                        Directory.CreateDirectory(directory);
+                    }
+                    byte[] processedData = XOR(File.ReadAllBytes(file));
+                    File.WriteAllBytes(tempFilePath, processedData);
+                    files = GetFilesRecursive(tempFolder);
                 }
             }
 
@@ -246,7 +262,7 @@ namespace LightvnTools
                 zipStream.PutNextEntry(entry);
 
                 using FileStream fileStream = file.OpenRead();
-                byte[] buffer = new byte[4096]; // Optimum size
+                byte[] buffer = new byte[8192]; // Optimum size
                 int bytesRead;
                 while ((bytesRead = fileStream.Read(buffer, 0, buffer.Length)) > 0)
                 {
@@ -397,7 +413,7 @@ namespace LightvnTools
                 {
                     outputFilePath += Results[0].Definition.File.Extensions[0];
                 }
-                
+
 
                 using FileStream outputStream = File.OpenWrite(outputFilePath ?? filePath);
                 outputStream.Write(buffer, 0, bufferLength);
